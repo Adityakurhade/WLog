@@ -1,0 +1,385 @@
+import streamlit as st
+import database
+import pandas as pd
+from datetime import datetime
+import time
+
+# Page Config
+st.set_page_config(page_title="WLog", page_icon="🏋️", layout="wide")
+
+# Initialize DB
+database.init_db()
+
+# Session State
+if 'workout_log' not in st.session_state:
+    st.session_state.workout_log = []
+if 'current_session_name' not in st.session_state:
+    st.session_state.current_session_name = None
+if 'session_start_time' not in st.session_state:
+    st.session_state.session_start_time = None
+
+def main():
+    st.sidebar.title("WLog 🏋️")
+    menu = ["Dashboard", "Log Workout", "Routines", "Exercise Library", "History"]
+    choice = st.sidebar.radio("Navigate", menu)
+
+    if choice == "Dashboard":
+        show_dashboard()
+    elif choice == "Log Workout":
+        show_log_workout()
+    elif choice == "Routines":
+        show_routines()
+    elif choice == "Exercise Library":
+        show_library()
+    elif choice == "History":
+        show_history()
+
+def show_dashboard():
+    st.title("Dashboard")
+    streak = database.get_streak()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(label="Current Streak 🔥", value=f"{streak} Days")
+    
+    last_wo = database.get_last_workout_summary()
+    if last_wo:
+        with col2:
+            st.metric(label="Last Workout Volume", value=f"{last_wo['volume']:,.0f} kg")
+            st.caption(f"Date: {last_wo['date']}")
+
+def show_routines():
+    st.title("Custom Routines")
+    
+    with st.expander("Create New Routine", expanded=True):
+        r_name = st.text_input("Routine Name (e.g., Upper Body)")
+        
+        all_ex = database.get_all_exercises()
+        options = {f"{e['muscle']} - {e['name']}": e['id'] for e in all_ex}
+        sorted_opts = sorted(options.keys())
+        
+        selected_ex = st.multiselect("Select Exercises", sorted_opts)
+        
+        if st.button("Save Routine"):
+            if r_name and selected_ex:
+                ids = [options[s] for s in selected_ex]
+                database.create_session(r_name, ids)
+                st.success(f"Routine '{r_name}' Created!")
+                st.rerun()
+            else:
+                st.error("Name and Exercises required")
+    
+    st.divider()
+    st.subheader("Your Routines")
+    sessions = database.get_all_sessions()
+    
+    for s in sessions:
+        c1, c2 = st.columns([5, 1])
+        with c1:
+            with st.expander(s['name']):
+                details = database.get_session_details(s['id'])
+                for d in details:
+                    st.text(f"• {d['name']} ({d['muscle']})")
+        with c2:
+            if st.button("🗑️", key=f"del_sess_{s['id']}", help=f"Delete {s['name']}"):
+                database.delete_session(s['id'])
+                st.toast(f"Deleted {s['name']}")
+                st.rerun()
+
+def show_log_workout():
+    st.title("Log Workout")
+    
+    # Routine Selector / Start Logic
+    if not st.session_state.workout_log and not st.session_state.session_start_time:
+        st.subheader("Start Session")
+        sessions = database.get_all_sessions()
+        session_opts = ["Empty Workout"] + [s['name'] for s in sessions]
+        
+        selected_session = st.selectbox("Choose Routine", session_opts)
+        
+        if st.button("Start Workout ⏱️"):
+            st.session_state.session_start_time = datetime.now()
+            st.session_state.current_session_name = None if selected_session == "Empty Workout" else selected_session
+            
+            if selected_session != "Empty Workout":
+                # Pre-fill
+                s_id = next(s['id'] for s in sessions if s['name'] == selected_session)
+                details = database.get_session_details(s_id)
+                for d in details:
+                    last = database.get_last_performance(d['id'])
+                    st.session_state.workout_log.append({
+                        "id": d['id'],
+                        "name": d['name'],
+                        "muscle": d['muscle'],
+                        "weight": last['weight'] if last else 0.0,
+                        "reps": last['reps'] if last else 0,
+                        "last_perf": f"{last['weight']}kg x {last['reps']} ({last['date']})" if last else "New",
+                        "is_session_item": True
+                    })
+            st.rerun()
+
+    # If session is active (either logs exist OR start time is set)
+    if st.session_state.session_start_time:
+        import streamlit.components.v1 as components
+        
+        # Header with Timer (JS based for live updates)
+        c1, c2 = st.columns([3, 1])
+        c1.subheader(f"Current Session: {st.session_state.current_session_name or 'Freestyle'}")
+        
+        # Pass start time as timestamp for JS
+        start_ts = st.session_state.session_start_time.timestamp() * 1000
+        
+        timer_html = f"""
+        <div style="text-align: center;">
+            <div style="font-size: 14px; color: #555; margin-bottom: 4px;">Time Elapsed</div>
+            <div id="timer" style="font-size: 24px; font-weight: bold; font-family: monospace; color: #111;">00:00:00</div>
+        </div>
+        <script>
+        function updateTimer() {{
+            const start = {start_ts};
+            const now = new Date().getTime();
+            const diff = Math.floor((now - start) / 1000);
+            
+            if (diff < 0) return; // Prevent negative on weird sync
+            
+            const h = Math.floor(diff / 3600);
+            const m = Math.floor((diff % 3600) / 60);
+            const s = diff % 60;
+            
+            document.getElementById("timer").innerHTML = 
+                (h < 10 ? "0" + h : h) + ":" + 
+                (m < 10 ? "0" + m : m) + ":" + 
+                (s < 10 ? "0" + s : s);
+        }}
+        setInterval(updateTimer, 1000);
+        updateTimer();
+        </script>
+        """
+        
+        with c2:
+            components.html(timer_html, height=80)
+        
+        # Main Logger Interface
+        current_session = st.session_state.current_session_name
+        exercises = database.get_all_exercises()
+        all_ex_map = {f"{e['muscle']} - {e['name']}": e for e in exercises}
+        
+        options = []
+        session_ex_ids = []
+        if current_session:
+            s_id = database.get_session_by_name(current_session)
+            if s_id:
+                session_details = database.get_session_details(s_id)
+                session_ex_ids = [d['id'] for d in session_details]
+                session_options = [k for k, v in all_ex_map.items() if v['id'] in session_ex_ids]
+                session_options.sort()
+                options = session_options + ["---", "➕ Add from Database", "✨ Create New Exercise"]
+        else:
+            options = sorted(list(all_ex_map.keys())) + ["---", "✨ Create New Exercise"]
+        
+        st.divider()
+        with st.container():
+            st.write("### Add Set")
+            selected_option = st.selectbox("Select Exercise", options)
+            target_exercise = None
+            
+            if selected_option == "---":
+                st.info("Select an option above.")
+            elif selected_option == "➕ Add from Database":
+                all_opts = sorted(list(all_ex_map.keys()))
+                full_select = st.selectbox("Search All Exercises", all_opts)
+                target_exercise = all_ex_map[full_select]
+            elif selected_option == "✨ Create New Exercise":
+                with st.expander("New Exercise Details", expanded=True):
+                    c_name = st.text_input("Name")
+                    c_muscle = st.selectbox("Muscle", ["Chest", "Back", "Legs", "Shoulders", "Arms", "Core", "Cardio", "Other"])
+                    c_cat = st.selectbox("Category", ["Strength", "Hypertrophy", "Endurance", "Mobility", "Cardio", "Custom"])
+                    if st.button("Create & Use"):
+                        if c_name:
+                            try:
+                                database.add_custom_exercise(c_name, c_muscle, category=c_cat)
+                                st.success(f"Created {c_name}!")
+                                st.rerun()
+                            except ValueError as e:
+                                st.error(str(e))
+            else:
+                target_exercise = all_ex_map[selected_option]
+
+            if target_exercise:
+                last = database.get_last_performance(target_exercise['id'])
+                if last:
+                    st.caption(f"Last Log: {last['weight']}kg x {last['reps']} ({last['date']})")
+                col_w, col_r, col_btn = st.columns([1, 1, 1])
+                with col_w:
+                    weight = st.number_input("Kg", min_value=0.0, step=1.25, key="w_input")
+                with col_r:
+                    reps = st.number_input("Reps", min_value=0, step=1, value=0, key="r_input")
+                with col_btn:
+                    st.write("")
+                    st.write("")
+                    if st.button("Add Set", type="primary"):
+                        if reps > 0:
+                            st.session_state.workout_log.append({
+                                "id": target_exercise['id'],
+                                "name": target_exercise['name'],
+                                "muscle": target_exercise['muscle'],
+                                "weight": weight,
+                                "reps": reps,
+                                "last_perf": f"{last['weight']}kg x {last['reps']}" if last else "New"
+                            })
+                            st.success(f"Added {target_exercise['name']}")
+                            st.rerun()
+                        else:
+                            st.error("Reps > 0 required")
+
+        # View/Edit Log
+        if st.session_state.workout_log:
+            display_data = []
+            unique_logged_ids = set()
+            for l in st.session_state.workout_log:
+                unique_logged_ids.add(l['id'])
+                display_data.append({
+                    "Exercise": l['name'],
+                    "Weight": l['weight'],
+                    "Reps": l['reps'],
+                    "Last": l.get('last_perf', '-')
+                })
+            
+            st.dataframe(display_data, use_container_width=True)
+            
+            # Check for Routine Update
+            update_routine = False
+            if current_session and session_ex_ids:
+                new_ids = [ids for ids in unique_logged_ids if ids not in session_ex_ids]
+                if new_ids:
+                    st.info(f"You added {len(new_ids)} new exercise(s) to this session.")
+                    update_routine = st.checkbox(f"Update '{current_session}' to include these new exercises?", value=True)
+            
+            cols = st.columns(3)
+            if cols[1].button("Finish & Save", type="primary", use_container_width=True):
+                save_routine(update_session_bool=update_routine)
+                
+            if cols[2].button("Cancel & Clear"):
+                st.session_state.workout_log = []
+                st.session_state.current_session_name = None
+                st.session_state.session_start_time = None
+                st.rerun()
+        else:
+            if st.button("Cancel Session"):
+                st.session_state.session_start_time = None
+                st.session_state.current_session_name = None
+                st.rerun()
+
+def save_routine(update_session_bool=False):
+    logs = st.session_state.workout_log
+    s_name = st.session_state.get('current_session_name')
+    start = st.session_state.get('session_start_time')
+    
+    if not logs:
+        return
+        
+    duration = 0
+    if start:
+        delta = datetime.now() - start
+        duration = int(delta.total_seconds() / 60)
+    
+    total_vol = sum(l['weight'] * l['reps'] for l in logs)
+    
+    w_id = database.create_workout(total_vol, session_name=s_name, duration_minutes=duration)
+    
+    logged_ex_ids = []
+    seen = set()
+    for idx, item in enumerate(logs):
+        database.log_set(w_id, item['id'], item['weight'], item['reps'], idx)
+        if item['id'] not in seen:
+            logged_ex_ids.append(item['id'])
+            seen.add(item['id'])
+            
+    if update_session_bool and s_name:
+        database.update_session(s_name, logged_ex_ids)
+        st.toast(f"Updated routine '{s_name}'!")
+        
+    st.session_state.workout_log = []
+    st.session_state.current_session_name = None
+    st.session_state.session_start_time = None
+    st.balloons()
+    st.success(f"Workout Saved! Duration: {duration} mins")
+
+def show_library():
+    st.title("Exercise Library")
+    
+    tab1, tab2, tab3 = st.tabs(["View Exercises", "Add Custom", "Manage"])
+    
+    with tab1:
+        exercises = database.get_all_exercises()
+        df = pd.DataFrame(exercises)
+        if not df.empty:
+            df = df[["muscle", "name", "category", "difficulty", "instructions"]]
+            
+            search = st.text_input("Search Library", "")
+            if search:
+                df = df[df["name"].str.contains(search, case=False)]
+                
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.warning("Database empty.")
+            
+    with tab2:
+        st.subheader("Create New Exercise")
+        with st.form("custom_ex"):
+            name = st.text_input("Exercise Name")
+            muscle = st.selectbox("Target Muscle", ["Chest", "Back", "Legs", "Shoulders", "Arms", "Core", "Cardio", "Other"])
+            category = st.selectbox("Category", ["Strength", "Hypertrophy", "Endurance", "Mobility", "Cardio", "Custom"])
+            diff = st.slider("Difficulty", 1, 5, 1)
+            inst = st.text_area("Instructions", "Enter execution details...")
+            
+            submitted = st.form_submit_button("Create Exercise")
+            if submitted:
+                if name:
+                    try:
+                        database.add_custom_exercise(name, muscle, inst, diff, category)
+                        st.success(f"Created {name}!")
+                    except ValueError as e:
+                        st.error(str(e))
+                else:
+                    st.error("Name is required")
+
+    with tab3:
+        st.subheader("Delete Exercises")
+        st.warning("⚠️ Deleting an exercise will remove it from all History and Routines.")
+        exercises = database.get_all_exercises()
+        ex_map = {f"{e['muscle']} - {e['name']}": e['id'] for e in exercises}
+        
+        to_del = st.selectbox("Select Exercise to Delete", sorted(ex_map.keys()))
+        if st.button("Delete Permanently", type="primary"):
+            eid = ex_map[to_del]
+            database.delete_exercise(eid)
+            st.success("Deleted!")
+            st.rerun()
+
+def show_history():
+    st.title("Workout History")
+    history = database.get_history()
+    
+    if not history:
+        st.info("No workouts found.")
+        return
+        
+    for w in history:
+        dur = w.get('duration', 0)
+        title = f"{w['date']} - {w['session'] or 'Freestyle'} | ⏱️ {dur}m | Vol: {w['volume']:,.0f}kg"
+        
+        c1, c2 = st.columns([6, 1])
+        with c1:
+            with st.expander(title):
+                df = pd.DataFrame(w['sets'])
+                if not df.empty:
+                    st.dataframe(df[['muscle', 'exercise', 'weight', 'reps']], use_container_width=True)
+        with c2:
+            if st.button("🗑️", key=f"del_wo_{w['id']}", help="Delete Workout"):
+                database.delete_workout(w['id'])
+                st.toast("Workout Deleted")
+                st.rerun()
+
+if __name__ == "__main__":
+    main()
