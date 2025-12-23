@@ -81,7 +81,6 @@ def show_routines():
                 for d in details:
                     st.text(f"• {d['name']} ({d['muscle']})")
         with c2:
-        with c2:
             confirm_key = f"confirm_del_sess_{s['id']}"
             if st.session_state.get(confirm_key):
                 st.warning("Sure?")
@@ -410,7 +409,6 @@ def show_history():
                 df = pd.DataFrame(w['sets'])
                 if not df.empty:
                     st.dataframe(df[['muscle', 'exercise', 'weight', 'reps']], use_container_width=True)
-        with c2:
         with c2:
             confirm_key = f"confirm_del_wo_{w['id']}"
             if st.session_state.get(confirm_key):
