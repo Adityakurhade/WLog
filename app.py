@@ -81,10 +81,24 @@ def show_routines():
                 for d in details:
                     st.text(f"• {d['name']} ({d['muscle']})")
         with c2:
-            if st.button("🗑️", key=f"del_sess_{s['id']}", help=f"Delete {s['name']}"):
-                database.delete_session(s['id'])
-                st.toast(f"Deleted {s['name']}")
-                st.rerun()
+        with c2:
+            confirm_key = f"confirm_del_sess_{s['id']}"
+            if st.session_state.get(confirm_key):
+                st.warning("Sure?")
+                col_yes, col_no = st.columns(2)
+                if col_yes.button("✅", key=f"yes_sess_{s['id']}", help="Confirm Delete"):
+                    database.delete_session(s['id'])
+                    st.success(f"Deleted {s['name']}")
+                    del st.session_state[confirm_key]
+                    time.sleep(0.7)
+                    st.rerun()
+                if col_no.button("❌", key=f"no_sess_{s['id']}", help="Cancel"):
+                    del st.session_state[confirm_key]
+                    st.rerun()
+            else:
+                if st.button("🗑️", key=f"del_sess_{s['id']}", help=f"Delete {s['name']}"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
 
 def show_log_workout():
     st.title("Log Workout")
@@ -352,10 +366,31 @@ def show_library():
         
         to_del = st.selectbox("Select Exercise to Delete", sorted(ex_map.keys()))
         if st.button("Delete Permanently", type="primary"):
-            eid = ex_map[to_del]
-            database.delete_exercise(eid)
-            st.success("Deleted!")
+            st.session_state.delete_target_name = to_del
             st.rerun()
+            
+        if st.session_state.get("delete_target_name"):
+            target = st.session_state.delete_target_name
+            st.warning(f"Are you sure you want to delete '{target}'? This cannot be undone.")
+            c1, c2 = st.columns([1,4])
+            if c1.button("Yes, Delete", type="primary"):
+                # Check if it still exists (map keys might have changed if we didn't refresh, 
+                # but we're relying on ex_map which is fresh from this run)
+                # However, if target isn't in ex_map (e.g. somehow changed), we handle it.
+                if target in ex_map:
+                    eid = ex_map[target]
+                    database.delete_exercise(eid)
+                    st.success(f"Deleted {target}!")
+                else:
+                    st.error("Exercise not found.")
+                
+                del st.session_state.delete_target_name
+                time.sleep(0.7)
+                st.rerun()
+            
+            if c2.button("Cancel"):
+                del st.session_state.delete_target_name
+                st.rerun()
 
 def show_history():
     st.title("Workout History")
@@ -376,10 +411,24 @@ def show_history():
                 if not df.empty:
                     st.dataframe(df[['muscle', 'exercise', 'weight', 'reps']], use_container_width=True)
         with c2:
-            if st.button("🗑️", key=f"del_wo_{w['id']}", help="Delete Workout"):
-                database.delete_workout(w['id'])
-                st.toast("Workout Deleted")
-                st.rerun()
+        with c2:
+            confirm_key = f"confirm_del_wo_{w['id']}"
+            if st.session_state.get(confirm_key):
+                st.warning("Delete?")
+                col_yes, col_no = st.columns(2)
+                if col_yes.button("✅", key=f"yes_wo_{w['id']}", help="Confirm Delete"):
+                    database.delete_workout(w['id'])
+                    st.success("Workout Deleted")
+                    del st.session_state[confirm_key]
+                    time.sleep(0.7)
+                    st.rerun()
+                if col_no.button("❌", key=f"no_wo_{w['id']}", help="Cancel"):
+                    del st.session_state[confirm_key]
+                    st.rerun()
+            else:
+                if st.button("🗑️", key=f"del_wo_{w['id']}", help="Delete Workout"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
 
 if __name__ == "__main__":
     main()
