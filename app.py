@@ -1,5 +1,5 @@
 import streamlit as st
-import database
+import database_gsheets as database
 import pandas as pd
 from datetime import datetime
 import time
@@ -51,53 +51,132 @@ def show_dashboard():
 def show_routines():
     st.title("Custom Routines")
     
-    with st.expander("Create New Routine", expanded=True):
-        r_name = st.text_input("Routine Name (e.g., Upper Body)")
+    # Initialize Edit State
+    if "edit_routine_id" not in st.session_state:
+        st.session_state.edit_routine_id = None
+        
+    # Check for empty DB
+    sessions = database.get_all_sessions()
+    if not sessions:
+        st.warning("No routines found.")
+        if st.button("📥 Initialize Heart & Hustle Schedule"):
+            with st.spinner("Initializing Database..."):
+                database.create_default_schedule()
+            st.success("Schedule Created!")
+            time.sleep(1)
+            st.rerun()
+
+    # --- Edit Mode ---
+    if st.session_state.edit_routine_id:
+        st.subheader("Edit Routine")
+        
+        # Fetch current routine data to prepopulate
+        s_id = st.session_state.edit_routine_id
+        sessions = database.get_all_sessions()
+        target_session = next((s for s in sessions if s['id'] == s_id), None)
+        
+        if not target_session:
+            st.error("Routine not found.")
+            st.session_state.edit_routine_id = None
+            if st.button("Back"):
+                st.rerun()
+            return
+
+        # Edit Form
+        new_name = st.text_input("Routine Name", value=target_session['name'])
+        
+        # Pre-select existing exercises
+        current_details = database.get_session_details(s_id)
+        current_ex_ids = [d['id'] for d in current_details]
         
         all_ex = database.get_all_exercises()
         options = {f"{e['muscle']} - {e['name']}": e['id'] for e in all_ex}
         sorted_opts = sorted(options.keys())
         
-        selected_ex = st.multiselect("Select Exercises", sorted_opts)
+        # Map IDs back to Option Strings for default value
+        id_to_opt = {v: k for k, v in options.items()}
+        defaults = [id_to_opt[eid] for eid in current_ex_ids if eid in id_to_opt]
         
-        if st.button("Save Routine"):
-            if r_name and selected_ex:
-                ids = [options[s] for s in selected_ex]
-                database.create_session(r_name, ids)
-                st.success(f"Routine '{r_name}' Created!")
-                st.rerun()
-            else:
-                st.error("Name and Exercises required")
-    
-    st.divider()
-    st.subheader("Your Routines")
-    sessions = database.get_all_sessions()
-    
-    for s in sessions:
-        c1, c2 = st.columns([5, 1])
+        selected_ex = st.multiselect("Select Exercises", sorted_opts, default=defaults)
+        
+        c1, c2 = st.columns([1, 1])
         with c1:
-            with st.expander(s['name']):
-                details = database.get_session_details(s['id'])
-                for d in details:
-                    st.text(f"• {d['name']} ({d['muscle']})")
+            if st.button("💾 Save Changes", type="primary"):
+                if new_name and selected_ex:
+                    ids = [options[s] for s in selected_ex]
+                    database.update_session_by_id(s_id, new_name, ids)
+                    st.success(f"Routine '{new_name}' Updated!")
+                    st.session_state.edit_routine_id = None
+                    time.sleep(0.5)
+                    st.rerun()
+                else:
+                    st.error("Name and Exercises required")
+                    
         with c2:
-            confirm_key = f"confirm_del_sess_{s['id']}"
-            if st.session_state.get(confirm_key):
-                st.warning("Sure?")
-                col_yes, col_no = st.columns(2)
-                if col_yes.button("✅", key=f"yes_sess_{s['id']}", help="Confirm Delete"):
-                    database.delete_session(s['id'])
-                    st.success(f"Deleted {s['name']}")
-                    del st.session_state[confirm_key]
-                    time.sleep(0.7)
+            if st.button("Cancel"):
+                st.session_state.edit_routine_id = None
+                st.rerun()
+
+    else:
+        # --- Create / View Mode ---
+        with st.expander("Create New Routine", expanded=False):
+            r_name = st.text_input("Routine Name (e.g., Upper Body)")
+            
+            all_ex = database.get_all_exercises()
+            options = {f"{e['muscle']} - {e['name']}": e['id'] for e in all_ex}
+            sorted_opts = sorted(options.keys())
+            
+            selected_ex = st.multiselect("Select Exercises", sorted_opts)
+            
+            if st.button("Save Routine"):
+                if r_name and selected_ex:
+                    ids = [options[s] for s in selected_ex]
+                    database.create_session(r_name, ids)
+                    st.success(f"Routine '{r_name}' Created!")
                     st.rerun()
-                if col_no.button("❌", key=f"no_sess_{s['id']}", help="Cancel"):
-                    del st.session_state[confirm_key]
+                else:
+                    st.error("Name and Exercises required")
+        
+        st.divider()
+        st.subheader("Your Routines")
+        sessions = database.get_all_sessions()
+        
+        if not sessions:
+            st.info("No routines created yet.")
+            
+        for s in sessions:
+            c1, c2, c3 = st.columns([6, 1, 1])
+            with c1:
+                with st.expander(s['name']):
+                    details = database.get_session_details(s['id'])
+                    for d in details:
+                        st.text(f"• {d['name']} ({d['muscle']})")
+            
+            # Edit Button
+            with c2:
+                if st.button("✏️", key=f"edit_sess_{s['id']}", help="Edit Routine"):
+                    st.session_state.edit_routine_id = s['id']
                     st.rerun()
-            else:
-                if st.button("🗑️", key=f"del_sess_{s['id']}", help=f"Delete {s['name']}"):
-                    st.session_state[confirm_key] = True
-                    st.rerun()
+            
+            # Delete Button
+            with c3:
+                confirm_key = f"confirm_del_sess_{s['id']}"
+                if st.session_state.get(confirm_key):
+                    st.warning("Delete?")
+                    col_yes, col_no = st.columns(2)
+                    if col_yes.button("✅", key=f"yes_sess_{s['id']}", help="Confirm"):
+                        database.delete_session(s['id'])
+                        st.success(f"Deleted")
+                        del st.session_state[confirm_key]
+                        time.sleep(0.5)
+                        st.rerun()
+                    if col_no.button("❌", key=f"no_sess_{s['id']}", help="Cancel"):
+                        del st.session_state[confirm_key]
+                        st.rerun()
+                else:
+                    if st.button("🗑️", key=f"del_sess_{s['id']}", help=f"Delete {s['name']}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
 
 def show_log_workout():
     st.title("Log Workout")
@@ -106,15 +185,15 @@ def show_log_workout():
     if not st.session_state.workout_log and not st.session_state.session_start_time:
         st.subheader("Start Session")
         sessions = database.get_all_sessions()
-        session_opts = ["Empty Workout"] + [s['name'] for s in sessions]
+        session_opts = ["New Workout"] + [s['name'] for s in sessions]
         
-        selected_session = st.selectbox("Choose Routine", session_opts)
+        selected_session = st.selectbox("Choose Routine or start a New Workout", session_opts)
         
         if st.button("Start Workout ⏱️"):
             st.session_state.session_start_time = datetime.now()
-            st.session_state.current_session_name = None if selected_session == "Empty Workout" else selected_session
+            st.session_state.current_session_name = None if selected_session == "New Workout" else selected_session
             
-            if selected_session != "Empty Workout":
+            if selected_session != "New Workout":
                 # Pre-fill
                 s_id = next(s['id'] for s in sessions if s['name'] == selected_session)
                 details = database.get_session_details(s_id)
@@ -219,6 +298,10 @@ def show_log_workout():
                 target_exercise = all_ex_map[selected_option]
 
             if target_exercise:
+                # Show Info Box for Instructions
+                if target_exercise.get('instructions'):
+                    st.info(f"ℹ️ **{target_exercise['name']}**: {target_exercise['instructions']}")
+                
                 last = database.get_last_performance(target_exercise['id'])
                 if last:
                     st.caption(f"Last Log: {last['weight']}kg x {last['reps']} ({last['date']})")
@@ -258,7 +341,7 @@ def show_log_workout():
                     "Last": l.get('last_perf', '-')
                 })
             
-            st.dataframe(display_data, use_container_width=True)
+            st.dataframe(display_data, width='stretch')
             
             # Check for Routine Update
             update_routine = False
@@ -269,7 +352,7 @@ def show_log_workout():
                     update_routine = st.checkbox(f"Update '{current_session}' to include these new exercises?", value=True)
             
             cols = st.columns(3)
-            if cols[1].button("Finish & Save", type="primary", use_container_width=True):
+            if cols[1].button("Finish & Save", type="primary", width='stretch'):
                 save_routine(update_session_bool=update_routine)
                 
             if cols[2].button("Cancel & Clear"):
@@ -333,7 +416,7 @@ def show_library():
             if search:
                 df = df[df["name"].str.contains(search, case=False)]
                 
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width='stretch')
         else:
             st.warning("Database empty.")
             
@@ -408,7 +491,7 @@ def show_history():
             with st.expander(title):
                 df = pd.DataFrame(w['sets'])
                 if not df.empty:
-                    st.dataframe(df[['muscle', 'exercise', 'weight', 'reps']], use_container_width=True)
+                    st.dataframe(df[['muscle', 'exercise', 'weight', 'reps']], width='stretch')
         with c2:
             confirm_key = f"confirm_del_wo_{w['id']}"
             if st.session_state.get(confirm_key):

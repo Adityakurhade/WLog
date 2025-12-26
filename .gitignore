@@ -1,0 +1,5 @@
+secrets_template.toml
+service_account.json
+GSHEETS_SETUP.md
+app_log.txt
+debug_log.txt
